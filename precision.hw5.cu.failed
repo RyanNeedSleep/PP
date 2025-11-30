@@ -84,196 +84,41 @@ struct Problem3Result {
     double best_cost;
 };
 
-template <int ILP>
 __global__ void integrate_kernel(int n, double* qx, double* qy, double* qz, double* vx,
     double* vy, double* vz, double* m, const int* is_device, double current_time,
     double eps, double G, double dt, double device_mass_scale,
     PlanetAsteroidStats* distance_stats, DeviceScenarioStats* device_stats, int step) {
-    // ... (Keep existing ILP kernel code) ...
-    // Note: Since I cannot use "Keep existing code" in replacement, I must paste the full ILP kernel here again or use a separate tool call.
-    // To be safe and correct, I will paste the full ILP kernel code I wrote in the previous step, 
-    // AND add the new kernel below it.
-    
     extern __shared__ unsigned char shared_mem[];
     double* s_qx = reinterpret_cast<double*>(shared_mem);
     double* s_qy = s_qx + blockDim.x;
     double* s_qz = s_qy + blockDim.x;
     double* s_m = s_qz + blockDim.x;
+    // s_is_device removed
 
-    int tid = threadIdx.x;
-    int bid = blockIdx.x;
-    int i0 = (bid * ILP) * blockDim.x + tid;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
 
-    double r_qx[ILP], r_qy[ILP], r_qz[ILP];
-    double r_vx[ILP], r_vy[ILP], r_vz[ILP];
-    double r_ax[ILP] = {0}, r_ay[ILP] = {0}, r_az[ILP] = {0};
-    bool active[ILP];
-
-    for (int k = 0; k < ILP; ++k) {
-        int idx = i0 + k * blockDim.x;
-        active[k] = (idx < n);
-        if (active[k]) {
-            r_qx[k] = qx[idx];
-            r_qy[k] = qy[idx];
-            r_qz[k] = qz[idx];
-            r_vx[k] = vx[idx];
-            r_vy[k] = vy[idx];
-            r_vz[k] = vz[idx];
-        }
-    }
-    
+    // Fused Stats Logic (Delayed: Record stats for previous step)
     int stats_step = step - 1;
-    if (stats_step >= 0) {
-        for (int k = 0; k < ILP; ++k) {
-            int idx = i0 + k * blockDim.x;
-            if (!active[k]) continue;
-
-            if (idx == 0 && distance_stats) {
-                int p_idx = distance_stats->planet_idx;
-                int a_idx = distance_stats->asteroid_idx;
-                double dx = qx[p_idx] - qx[a_idx];
-                double dy = qy[p_idx] - qy[a_idx];
-                double dz = qz[p_idx] - qz[a_idx];
-                double dist_sq = dx * dx + dy * dy + dz * dz;
-                if (distance_stats->track_min && dist_sq < distance_stats->min_dist_sq) {
-                    distance_stats->min_dist_sq = dist_sq;
-                }
-                if (distance_stats->track_collision && distance_stats->hit_step == -1 && dist_sq < distance_stats->planet_radius_sq) {
-                    distance_stats->hit_step = stats_step;
-                }
-            }
-
-            if (device_stats && idx == device_stats->device_idx) {
-                 int p_idx = device_stats->planet_idx;
-                 double dx = qx[p_idx] - r_qx[k];
-                 double dy = qy[p_idx] - r_qy[k];
-                 double dz = qz[p_idx] - r_qz[k];
-                 double dist_sq = dx * dx + dy * dy + dz * dz;
-                 
-                 if (device_stats->destroyed_step == -1) {
-                     double missile_dist = stats_step * device_stats->dt * device_stats->missile_speed;
-                     if (missile_dist * missile_dist > dist_sq) {
-                         device_stats->destroyed_step = stats_step;
-                     }
-                 }
-                 if (device_stats->destroyed_step != -1 && !device_stats->mass_zeroed) {
-                     m[idx] = 0.0;
-                     device_stats->mass_zeroed = 1;
-                 }
-            }
-        }
-    }
-
-    for (int tile = 0; tile < n; tile += blockDim.x) {
-        int load_idx = tile + tid;
-        if (load_idx < n) {
-            s_qx[tid] = qx[load_idx];
-            s_qy[tid] = qy[load_idx];
-            s_qz[tid] = qz[load_idx];
-            double val_m = m[load_idx];
-            if (is_device[load_idx]) val_m *= device_mass_scale;
-            s_m[tid] = val_m;
-        } else {
-            s_qx[tid] = 0.0; s_qy[tid] = 0.0; s_qz[tid] = 0.0; s_m[tid] = 0.0;
-        }
-        __syncthreads();
-
-        int tile_count = (tile + blockDim.x > n) ? (n - tile) : blockDim.x;
-
-        #pragma unroll 16
-        for (int j = 0; j < tile_count; ++j) {
-            double sj_qx = s_qx[j];
-            double sj_qy = s_qy[j];
-            double sj_qz = s_qz[j];
-            double sj_m  = s_m[j];
-
-            for (int k = 0; k < ILP; ++k) {
-                if (!active[k]) continue;
-                
-                double dx = sj_qx - r_qx[k];
-                double dy = sj_qy - r_qy[k];
-                double dz = sj_qz - r_qz[k];
-                double dist2 = dx * dx + dy * dy + dz * dz + eps * eps;
-                double inv_dist = rsqrt(dist2);
-                double inv_dist3 = inv_dist * inv_dist * inv_dist;
-                double scale = G * sj_m * inv_dist3;
-                
-                r_ax[k] += scale * dx;
-                r_ay[k] += scale * dy;
-                r_az[k] += scale * dz;
-            }
-        }
-        __syncthreads();
-    }
-
-    for (int k = 0; k < ILP; ++k) {
-        if (active[k]) {
-            int idx = i0 + k * blockDim.x;
-            r_vx[k] += r_ax[k] * dt;
-            r_vy[k] += r_ay[k] * dt;
-            r_vz[k] += r_az[k] * dt;
-            r_qx[k] += r_vx[k] * dt;
-            r_qy[k] += r_vy[k] * dt;
-            r_qz[k] += r_vz[k] * dt;
-
-            vx[idx] = r_vx[k];
-            vy[idx] = r_vy[k];
-            vz[idx] = r_vz[k];
-            qx[idx] = r_qx[k];
-            qy[idx] = r_qy[k];
-            qz[idx] = r_qz[k];
-        }
-    }
-}
-
-__global__ void integrate_kernel_all_shared(int n, double* qx, double* qy, double* qz, double* vx,
-    double* vy, double* vz, double* m, const int* is_device, double current_time,
-    double eps, double G, double dt, double device_mass_scale,
-    PlanetAsteroidStats* distance_stats, DeviceScenarioStats* device_stats, int step) {
-    
-    // Max N=1024. Shared memory needed: 1024 * 4 * 8 bytes = 32KB.
-    __shared__ double s_qx[1024];
-    __shared__ double s_qy[1024];
-    __shared__ double s_qz[1024];
-    __shared__ double s_m[1024];
-
-    int tid = threadIdx.x;
-    int i = blockIdx.x * blockDim.x + tid;
-
-    // Cooperative Load: All threads load the full dataset
-    for (int k = tid; k < n; k += blockDim.x) {
-        s_qx[k] = qx[k];
-        s_qy[k] = qy[k];
-        s_qz[k] = qz[k];
-        double val_m = m[k];
-        if (is_device[k]) val_m *= device_mass_scale;
-        s_m[k] = val_m;
-    }
-    __syncthreads();
-
-    if (i >= n) return;
-
-    double qxi = s_qx[i];
-    double qyi = s_qy[i];
-    double qzi = s_qz[i];
-    double vxi = vx[i];
-    double vyi = vy[i];
-    double vzi = vz[i];
-    double axi = 0.0;
-    double ayi = 0.0;
-    double azi = 0.0;
-
-    // Stats Logic (Simplified for N=1024 case)
-    int stats_step = step - 1;
-    if (stats_step >= 0) {
+    if (i < n && stats_step >= 0) {
+        // Planet Stats (Thread 0)
         if (i == 0 && distance_stats) {
             int p_idx = distance_stats->planet_idx;
             int a_idx = distance_stats->asteroid_idx;
-            // Use shared memory for consistency within this step
-            double dx = s_qx[p_idx] - s_qx[a_idx];
-            double dy = s_qy[p_idx] - s_qy[a_idx];
-            double dz = s_qz[p_idx] - s_qz[a_idx];
+            
+            // Read from global memory (consistent state from previous step)
+            double p_qx = qx[p_idx];
+            double p_qy = qy[p_idx];
+            double p_qz = qz[p_idx];
+            
+            double a_qx = qx[a_idx];
+            double a_qy = qy[a_idx];
+            double a_qz = qz[a_idx];
+            
+            double dx = p_qx - a_qx;
+            double dy = p_qy - a_qy;
+            double dz = p_qz - a_qz;
             double dist_sq = dx * dx + dy * dy + dz * dz;
+            
             if (distance_stats->track_min && dist_sq < distance_stats->min_dist_sq) {
                 distance_stats->min_dist_sq = dist_sq;
             }
@@ -281,54 +126,144 @@ __global__ void integrate_kernel_all_shared(int n, double* qx, double* qy, doubl
                 distance_stats->hit_step = stats_step;
             }
         }
-        if (device_stats && i == device_stats->device_idx) {
-             int p_idx = device_stats->planet_idx;
-             double dx = s_qx[p_idx] - qxi;
-             double dy = s_qy[p_idx] - qyi;
-             double dz = s_qz[p_idx] - qzi;
-             double dist_sq = dx * dx + dy * dy + dz * dz;
-             if (device_stats->destroyed_step == -1) {
-                 double missile_dist = stats_step * device_stats->dt * device_stats->missile_speed;
-                 if (missile_dist * missile_dist > dist_sq) {
-                     device_stats->destroyed_step = stats_step;
-                 }
-             }
-             if (device_stats->destroyed_step != -1 && !device_stats->mass_zeroed) {
-                 m[i] = 0.0;
-                 device_stats->mass_zeroed = 1;
-             }
+        
+        if (device_stats) {
+            if (i == device_stats->device_idx) {
+                int p_idx = device_stats->planet_idx;
+                double p_qx = qx[p_idx];
+                double p_qy = qy[p_idx];
+                double p_qz = qz[p_idx];
+                
+                // Use current thread's position from global memory
+                double d_qx = qx[i];
+                double d_qy = qy[i];
+                double d_qz = qz[i];
+                
+                double dx = p_qx - d_qx;
+                double dy = p_qy - d_qy;
+                double dz = p_qz - d_qz;
+                double dist_sq = dx * dx + dy * dy + dz * dz;
+                
+                if (device_stats->destroyed_step == -1) {
+                    double missile_dist = stats_step * device_stats->dt * device_stats->missile_speed;
+                    double missile_dist_sq = missile_dist * missile_dist;
+                    if (missile_dist_sq > dist_sq) {
+                        device_stats->destroyed_step = stats_step;
+                    }
+                }
+                
+                if (device_stats->destroyed_step != -1 && !device_stats->mass_zeroed) {
+                    m[i] = 0.0;
+                    device_stats->mass_zeroed = 1;
+                }
+            }
         }
     }
 
-    #pragma unroll 32
-    for (int j = 0; j < n; ++j) {
-        if (i == j) continue;
-        double dx = s_qx[j] - qxi;
-        double dy = s_qy[j] - qyi;
-        double dz = s_qz[j] - qzi;
-        double dist2 = dx * dx + dy * dy + dz * dz + eps * eps;
-        double inv_dist = rsqrt(dist2);
-        double inv_dist3 = inv_dist * inv_dist * inv_dist;
-        double scale = G * s_m[j] * inv_dist3;
-        axi += scale * dx;
-        ayi += scale * dy;
-        azi += scale * dz;
+    double qxi, qyi, qzi, vxi, vyi, vzi;
+    double axi = 0.0;
+    double ayi = 0.0;
+    double azi = 0.0;
+
+    if (i < n) {
+        qxi = qx[i];
+        qyi = qy[i];
+        qzi = qz[i];
+        vxi = vx[i];
+        vyi = vy[i];
+        vzi = vz[i];
     }
 
-    vxi += axi * dt;
-    vyi += ayi * dt;
-    vzi += azi * dt;
-    qxi += vxi * dt;
-    qyi += vyi * dt;
-    qzi += vzi * dt;
+    // Scaling constants for mixed precision
+    constexpr float SCALE = 1e-9f;
+    constexpr float SCALE_SQ = SCALE * SCALE;
 
-    vx[i] = vxi;
-    vy[i] = vyi;
-    vz[i] = vzi;
-    qx[i] = qxi;
-    qy[i] = qyi;
-    qz[i] = qzi;
+    for (int tile = 0; tile < n; tile += blockDim.x) {
+        int load_idx = tile + threadIdx.x;
+        if (load_idx < n) {
+            s_qx[threadIdx.x] = qx[load_idx];
+            s_qy[threadIdx.x] = qy[load_idx];
+            s_qz[threadIdx.x] = qz[load_idx];
+            
+            // Data Baking: Check is_device immediately
+            double val_m = m[load_idx];
+            if (is_device[load_idx]) {
+                val_m *= device_mass_scale;
+            }
+            s_m[threadIdx.x] = val_m;
+        } else {
+            s_qx[threadIdx.x] = 0.0;
+            s_qy[threadIdx.x] = 0.0;
+            s_qz[threadIdx.x] = 0.0;
+            s_m[threadIdx.x] = 0.0;
+        }
+        __syncthreads();
+
+        if (i < n) {
+            int tile_count = blockDim.x;
+            if (tile + tile_count > n) {
+                tile_count = n - tile;
+            }
+            for (int j = 0; j < tile_count; ++j) {
+                int partner_idx = tile + j;
+                if (partner_idx == i) continue;
+                
+                // Optimized: No is_device check here
+                double mj = s_m[j];
+                
+                // Compute subtraction in double for precision
+                double dx = s_qx[j] - qxi;
+                double dy = s_qy[j] - qyi;
+                double dz = s_qz[j] - qzi;
+                
+                double dist2 = dx * dx + dy * dy + dz * dz + eps * eps;
+                
+                // Scale dist2 to fit in float range for rsqrtf
+                // We want to compute 1/sqrt(dist2).
+                // Let dist2_scaled = dist2 * SCALE_SQ
+                // rsqrtf(dist2_scaled) = 1/sqrt(dist2 * SCALE^2) = 1/(sqrt(dist2) * SCALE)
+                // So 1/sqrt(dist2) = rsqrtf(dist2_scaled) * SCALE
+                
+                float dist2_scaled = (float)(dist2 * (double)SCALE_SQ);
+                float inv_dist_scaled = rsqrtf(dist2_scaled);
+                
+                // Convert back to double and unscale
+                double inv_dist = (double)inv_dist_scaled * (double)SCALE;
+                
+                // Newton-Raphson Refinement: y = y * (1.5 - 0.5 * x * y * y)
+                // x is dist2, y is inv_dist
+                inv_dist = inv_dist * (1.5 - 0.5 * dist2 * inv_dist * inv_dist);
+                inv_dist = inv_dist * (1.5 - 0.5 * dist2 * inv_dist * inv_dist);
+                
+                double inv_dist3 = inv_dist * inv_dist * inv_dist;
+                double scale = G * mj * inv_dist3;
+                
+                axi += scale * dx;
+                ayi += scale * dy;
+                azi += scale * dz;
+            }
+        }
+        __syncthreads();
+    }
+
+    if (i < n) {
+        vxi += axi * dt;
+        vyi += ayi * dt;
+        vzi += azi * dt;
+        qxi += vxi * dt;
+        qyi += vyi * dt;
+        qzi += vzi * dt;
+
+        vx[i] = vxi;
+        vy[i] = vyi;
+        vz[i] = vzi;
+        qx[i] = qxi;
+        qy[i] = qyi;
+        qz[i] = qzi;
+    }
 }
+
+
 
 class NBodySimulatorGPU {
 public:
@@ -344,13 +279,22 @@ public:
         CUDA_CHECK(cudaMemcpy(d_is_device_, is_device.data(), n_ * sizeof(int),
             cudaMemcpyHostToDevice));
     }
-    // ... (Destructor and other methods same as before) ...
+
     ~NBodySimulatorGPU() {
-        cudaFree(d_qx_); cudaFree(d_qy_); cudaFree(d_qz_);
-        cudaFree(d_vx_); cudaFree(d_vy_); cudaFree(d_vz_);
-        cudaFree(d_m_); cudaFree(d_is_device_);
-        cudaFree(d_qx_backup_); cudaFree(d_qy_backup_); cudaFree(d_qz_backup_);
-        cudaFree(d_vx_backup_); cudaFree(d_vy_backup_); cudaFree(d_vz_backup_);
+        cudaFree(d_qx_);
+        cudaFree(d_qy_);
+        cudaFree(d_qz_);
+        cudaFree(d_vx_);
+        cudaFree(d_vy_);
+        cudaFree(d_vz_);
+        cudaFree(d_m_);
+        cudaFree(d_is_device_);
+        cudaFree(d_qx_backup_);
+        cudaFree(d_qy_backup_);
+        cudaFree(d_qz_backup_);
+        cudaFree(d_vx_backup_);
+        cudaFree(d_vy_backup_);
+        cudaFree(d_vz_backup_);
         cudaFree(d_m_backup_);
     }
 
@@ -372,72 +316,42 @@ public:
         DeviceScenarioStats* device_stats = nullptr, cudaStream_t stream = 0) {
         double current_time = step * param::dt;
         double device_mass_scale = 1.0 + 0.5 * fabs(sin(current_time / 6000.0));
+        int threads = 256;
+        int blocks = (n_ + threads - 1) / threads;
+        // Optimized: Removed s_is_device from shared memory size
+        size_t shared_bytes = threads * (4 * sizeof(double));
         
-        if (n_ <= 1024) {
-             // All-Shared-Memory Path
-             int threads = 64; // Use smaller blocks to get more blocks on GPU
-             int blocks = (n_ + threads - 1) / threads;
-             // No dynamic shared mem needed, it's static in kernel
-             integrate_kernel_all_shared<<<blocks, threads, 0, stream>>>(
+        integrate_kernel<<<blocks, threads, shared_bytes, stream>>>(
+            n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
+            current_time, param::eps, param::G, param::dt, device_mass_scale,
+            distance_stats, device_stats, step);
+        CUDA_CHECK(cudaGetLastError());
+        
+        // If this is the last step, we need to record stats for it.
+        // We do this by launching integrate_kernel for step + 1 with dt = 0.
+        if (step == param::n_steps) {
+            integrate_kernel<<<blocks, threads, shared_bytes, stream>>>(
                 n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                current_time, param::eps, param::G, param::dt, device_mass_scale,
-                distance_stats, device_stats, step);
-             CUDA_CHECK(cudaGetLastError());
-             
-             if (step == param::n_steps) {
-                integrate_kernel_all_shared<<<blocks, threads, 0, stream>>>(
-                    n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                    current_time, param::eps, param::G, 0.0, device_mass_scale,
-                    distance_stats, device_stats, step + 1);
-                CUDA_CHECK(cudaGetLastError());
-             }
-        } else {
-            // ILP Path for larger N
-            int threads = 256;
-            constexpr int ILP = 4;
-            int blocks = (n_ + (threads * ILP) - 1) / (threads * ILP);
-            size_t shared_bytes = threads * (4 * sizeof(double));
-            
-            integrate_kernel<ILP><<<blocks, threads, shared_bytes, stream>>>(
-                n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                current_time, param::eps, param::G, param::dt, device_mass_scale,
-                distance_stats, device_stats, step);
+                current_time, param::eps, param::G, 0.0, device_mass_scale,
+                distance_stats, device_stats, step + 1);
             CUDA_CHECK(cudaGetLastError());
-            
-            if (step == param::n_steps) {
-                integrate_kernel<ILP><<<blocks, threads, shared_bytes, stream>>>(
-                    n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                    current_time, param::eps, param::G, 0.0, device_mass_scale,
-                    distance_stats, device_stats, step + 1);
-                CUDA_CHECK(cudaGetLastError());
-            }
         }
     }
 
     void record_distance_stats(PlanetAsteroidStats* stats, int step, cudaStream_t stream = 0) {
         double current_time = step * param::dt;
         double device_mass_scale = 1.0 + 0.5 * fabs(sin(current_time / 6000.0));
+        int threads = 256;
+        int blocks = (n_ + threads - 1) / threads;
+        size_t shared_bytes = threads * (4 * sizeof(double));
         
-        if (n_ <= 1024) {
-             int threads = 64;
-             int blocks = (n_ + threads - 1) / threads;
-             integrate_kernel_all_shared<<<blocks, threads, 0, stream>>>(
-                n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                current_time, param::eps, param::G, 0.0, device_mass_scale,
-                stats, nullptr, step + 1);
-             CUDA_CHECK(cudaGetLastError());
-        } else {
-            int threads = 256;
-            constexpr int ILP = 4;
-            int blocks = (n_ + (threads * ILP) - 1) / (threads * ILP);
-            size_t shared_bytes = threads * (4 * sizeof(double));
-            
-            integrate_kernel<ILP><<<blocks, threads, shared_bytes, stream>>>(
-                n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
-                current_time, param::eps, param::G, 0.0, device_mass_scale,
-                stats, nullptr, step + 1);
-            CUDA_CHECK(cudaGetLastError());
-        }
+        // Use dt=0.0 to skip integration but run stats.
+        // We pass step + 1 so that stats_step = step.
+        integrate_kernel<<<blocks, threads, shared_bytes, stream>>>(
+            n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
+            current_time, param::eps, param::G, 0.0, device_mass_scale,
+            stats, nullptr, step + 1);
+        CUDA_CHECK(cudaGetLastError());
     }
 
     void backup_state() {

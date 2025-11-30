@@ -1,4 +1,5 @@
-#include <cuda_runtime.h>
+#include "hip/hip_runtime.h"
+#include <hip/hip_runtime.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -12,9 +13,9 @@
 
 #define CUDA_CHECK(call)                                                                 \
     do {                                                                                 \
-        cudaError_t err__ = (call);                                                      \
-        if (err__ != cudaSuccess) {                                                      \
-            throw std::runtime_error(std::string("CUDA error: ") + cudaGetErrorString(err__)); \
+        hipError_t err__ = (call);                                                      \
+        if (err__ != hipSuccess) {                                                      \
+            throw std::runtime_error(std::string("CUDA error: ") + hipGetErrorString(err__)); \
         }                                                                                \
     } while (0)
 
@@ -333,43 +334,43 @@ __global__ void integrate_kernel_all_shared(int n, double* qx, double* qy, doubl
 class NBodySimulatorGPU {
 public:
     NBodySimulatorGPU(int n, const std::vector<int>& is_device) : n_(n) {
-        CUDA_CHECK(cudaMalloc(&d_qx_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_qy_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_qz_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vx_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vy_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vz_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_m_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_is_device_, n_ * sizeof(int)));
-        CUDA_CHECK(cudaMemcpy(d_is_device_, is_device.data(), n_ * sizeof(int),
-            cudaMemcpyHostToDevice));
+        CUDA_CHECK(hipMalloc(&d_qx_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_qy_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_qz_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vx_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vy_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vz_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_m_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_is_device_, n_ * sizeof(int)));
+        CUDA_CHECK(hipMemcpy(d_is_device_, is_device.data(), n_ * sizeof(int),
+            hipMemcpyHostToDevice));
     }
     // ... (Destructor and other methods same as before) ...
     ~NBodySimulatorGPU() {
-        cudaFree(d_qx_); cudaFree(d_qy_); cudaFree(d_qz_);
-        cudaFree(d_vx_); cudaFree(d_vy_); cudaFree(d_vz_);
-        cudaFree(d_m_); cudaFree(d_is_device_);
-        cudaFree(d_qx_backup_); cudaFree(d_qy_backup_); cudaFree(d_qz_backup_);
-        cudaFree(d_vx_backup_); cudaFree(d_vy_backup_); cudaFree(d_vz_backup_);
-        cudaFree(d_m_backup_);
+        hipFree(d_qx_); hipFree(d_qy_); hipFree(d_qz_);
+        hipFree(d_vx_); hipFree(d_vy_); hipFree(d_vz_);
+        hipFree(d_m_); hipFree(d_is_device_);
+        hipFree(d_qx_backup_); hipFree(d_qy_backup_); hipFree(d_qz_backup_);
+        hipFree(d_vx_backup_); hipFree(d_vy_backup_); hipFree(d_vz_backup_);
+        hipFree(d_m_backup_);
     }
 
     void set_state(const std::vector<double>& qx, const std::vector<double>& qy,
         const std::vector<double>& qz, const std::vector<double>& vx,
         const std::vector<double>& vy, const std::vector<double>& vz,
         const std::vector<double>& m) {
-        CUDA_CHECK(cudaMemcpy(d_qx_, qx.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_qy_, qy.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_qz_, qz.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_vx_, vx.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_vy_, vy.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_vz_, vz.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(d_m_, m.data(), n_ * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_qx_, qx.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_qy_, qy.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_qz_, qz.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_vx_, vx.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_vy_, vy.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_vz_, vz.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_m_, m.data(), n_ * sizeof(double), hipMemcpyHostToDevice));
         has_backup_ = false;
     }
 
     void run_step(int step, PlanetAsteroidStats* distance_stats = nullptr,
-        DeviceScenarioStats* device_stats = nullptr, cudaStream_t stream = 0) {
+        DeviceScenarioStats* device_stats = nullptr, hipStream_t stream = 0) {
         double current_time = step * param::dt;
         double device_mass_scale = 1.0 + 0.5 * fabs(sin(current_time / 6000.0));
         
@@ -382,14 +383,14 @@ public:
                 n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                 current_time, param::eps, param::G, param::dt, device_mass_scale,
                 distance_stats, device_stats, step);
-             CUDA_CHECK(cudaGetLastError());
+             CUDA_CHECK(hipGetLastError());
              
              if (step == param::n_steps) {
                 integrate_kernel_all_shared<<<blocks, threads, 0, stream>>>(
                     n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                     current_time, param::eps, param::G, 0.0, device_mass_scale,
                     distance_stats, device_stats, step + 1);
-                CUDA_CHECK(cudaGetLastError());
+                CUDA_CHECK(hipGetLastError());
              }
         } else {
             // ILP Path for larger N
@@ -402,19 +403,19 @@ public:
                 n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                 current_time, param::eps, param::G, param::dt, device_mass_scale,
                 distance_stats, device_stats, step);
-            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(hipGetLastError());
             
             if (step == param::n_steps) {
                 integrate_kernel<ILP><<<blocks, threads, shared_bytes, stream>>>(
                     n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                     current_time, param::eps, param::G, 0.0, device_mass_scale,
                     distance_stats, device_stats, step + 1);
-                CUDA_CHECK(cudaGetLastError());
+                CUDA_CHECK(hipGetLastError());
             }
         }
     }
 
-    void record_distance_stats(PlanetAsteroidStats* stats, int step, cudaStream_t stream = 0) {
+    void record_distance_stats(PlanetAsteroidStats* stats, int step, hipStream_t stream = 0) {
         double current_time = step * param::dt;
         double device_mass_scale = 1.0 + 0.5 * fabs(sin(current_time / 6000.0));
         
@@ -425,7 +426,7 @@ public:
                 n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                 current_time, param::eps, param::G, 0.0, device_mass_scale,
                 stats, nullptr, step + 1);
-             CUDA_CHECK(cudaGetLastError());
+             CUDA_CHECK(hipGetLastError());
         } else {
             int threads = 256;
             constexpr int ILP = 4;
@@ -436,14 +437,14 @@ public:
                 n_, d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, d_is_device_,
                 current_time, param::eps, param::G, 0.0, device_mass_scale,
                 stats, nullptr, step + 1);
-            CUDA_CHECK(cudaGetLastError());
+            CUDA_CHECK(hipGetLastError());
         }
     }
 
     void backup_state() {
         allocate_backups();
         copy_state(d_qx_backup_, d_qy_backup_, d_qz_backup_, d_vx_backup_, d_vy_backup_,
-            d_vz_backup_, d_m_backup_, cudaMemcpyDeviceToDevice);
+            d_vz_backup_, d_m_backup_, hipMemcpyDeviceToDevice);
         has_backup_ = true;
     }
 
@@ -451,7 +452,7 @@ public:
         if (!has_backup_) {
             throw std::runtime_error("Simulation backup requested before initialization");
         }
-        copy_state(d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, cudaMemcpyDeviceToDevice,
+        copy_state(d_qx_, d_qy_, d_qz_, d_vx_, d_vy_, d_vz_, d_m_, hipMemcpyDeviceToDevice,
             true);
     }
 
@@ -460,17 +461,17 @@ private:
         if (d_qx_backup_) {
             return;
         }
-        CUDA_CHECK(cudaMalloc(&d_qx_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_qy_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_qz_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vx_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vy_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_vz_backup_, n_ * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_m_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_qx_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_qy_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_qz_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vx_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vy_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_vz_backup_, n_ * sizeof(double)));
+        CUDA_CHECK(hipMalloc(&d_m_backup_, n_ * sizeof(double)));
     }
 
     void copy_state(double* qx_dst, double* qy_dst, double* qz_dst, double* vx_dst,
-        double* vy_dst, double* vz_dst, double* m_dst, cudaMemcpyKind kind,
+        double* vy_dst, double* vz_dst, double* m_dst, hipMemcpyKind kind,
         bool from_backup = false) {
         const double* qx_src = from_backup ? d_qx_backup_ : d_qx_;
         const double* qy_src = from_backup ? d_qy_backup_ : d_qy_;
@@ -479,13 +480,13 @@ private:
         const double* vy_src = from_backup ? d_vy_backup_ : d_vy_;
         const double* vz_src = from_backup ? d_vz_backup_ : d_vz_;
         const double* m_src = from_backup ? d_m_backup_ : d_m_;
-        CUDA_CHECK(cudaMemcpy(qx_dst, qx_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(qy_dst, qy_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(qz_dst, qz_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(vx_dst, vx_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(vy_dst, vy_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(vz_dst, vz_src, n_ * sizeof(double), kind));
-        CUDA_CHECK(cudaMemcpy(m_dst, m_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(qx_dst, qx_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(qy_dst, qy_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(qz_dst, qz_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(vx_dst, vx_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(vy_dst, vy_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(vz_dst, vz_src, n_ * sizeof(double), kind));
+        CUDA_CHECK(hipMemcpy(m_dst, m_src, n_ * sizeof(double), kind));
     }
 
     int n_;
@@ -524,17 +525,17 @@ Problem3Result run_problem3_subset(NBodySimulatorGPU& simulator,
 
     PlanetAsteroidStats* d_problem3_stats = nullptr;
     DeviceScenarioStats* d_device_stats = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_problem3_stats, sizeof(PlanetAsteroidStats)));
-    CUDA_CHECK(cudaMalloc(&d_device_stats, sizeof(DeviceScenarioStats)));
+    CUDA_CHECK(hipMalloc(&d_problem3_stats, sizeof(PlanetAsteroidStats)));
+    CUDA_CHECK(hipMalloc(&d_device_stats, sizeof(DeviceScenarioStats)));
     PlanetAsteroidStats* h_problem3_stats_pinned = nullptr;
-    CUDA_CHECK(cudaMallocHost(&h_problem3_stats_pinned, sizeof(PlanetAsteroidStats)));
+    CUDA_CHECK(hipHostMalloc(&h_problem3_stats_pinned, sizeof(PlanetAsteroidStats)));
 
-    cudaStream_t stream;
-    CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start, stream));
+    hipStream_t stream;
+    CUDA_CHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
+    hipEvent_t start, stop;
+    CUDA_CHECK(hipEventCreate(&start));
+    CUDA_CHECK(hipEventCreate(&stop));
+    CUDA_CHECK(hipEventRecord(start, stream));
 
     for (int device_idx : device_subset) {
         simulator.restore_from_backup();
@@ -546,8 +547,8 @@ Problem3Result run_problem3_subset(NBodySimulatorGPU& simulator,
         host_problem3_stats.planet_radius_sq = planet_radius_sq;
         host_problem3_stats.min_dist_sq = std::numeric_limits<double>::infinity();
         host_problem3_stats.hit_step = -1;
-        CUDA_CHECK(cudaMemcpy(d_problem3_stats, &host_problem3_stats,
-            sizeof(PlanetAsteroidStats), cudaMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_problem3_stats, &host_problem3_stats,
+            sizeof(PlanetAsteroidStats), hipMemcpyHostToDevice));
         DeviceScenarioStats host_device_stats{};
         host_device_stats.planet_idx = planet;
         host_device_stats.device_idx = device_idx;
@@ -555,27 +556,27 @@ Problem3Result run_problem3_subset(NBodySimulatorGPU& simulator,
         host_device_stats.destroyed_step = -1;
         host_device_stats.missile_speed = param::missile_speed;
         host_device_stats.dt = param::dt;
-        CUDA_CHECK(cudaMemcpy(d_device_stats, &host_device_stats, sizeof(DeviceScenarioStats),
-            cudaMemcpyHostToDevice));
+        CUDA_CHECK(hipMemcpy(d_device_stats, &host_device_stats, sizeof(DeviceScenarioStats),
+            hipMemcpyHostToDevice));
 
         simulator.record_distance_stats(d_problem3_stats, 0, stream);
         for (int step = 1; step <= param::n_steps; ++step) {
             simulator.run_step(step, d_problem3_stats, d_device_stats, stream);
             if (step % 100 == 0) {
-                CUDA_CHECK(cudaMemcpyAsync(h_problem3_stats_pinned, d_problem3_stats,
-                    sizeof(PlanetAsteroidStats), cudaMemcpyDeviceToHost, stream));
-                CUDA_CHECK(cudaStreamSynchronize(stream));
+                CUDA_CHECK(hipMemcpyAsync(h_problem3_stats_pinned, d_problem3_stats,
+                    sizeof(PlanetAsteroidStats), hipMemcpyDeviceToHost, stream));
+                CUDA_CHECK(hipStreamSynchronize(stream));
                 if (h_problem3_stats_pinned->hit_step != -1) {
                     break;
                 }
             }
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-        CUDA_CHECK(cudaMemcpy(h_problem3_stats_pinned, d_problem3_stats,
-            sizeof(PlanetAsteroidStats), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(hipStreamSynchronize(stream));
+        CUDA_CHECK(hipMemcpy(h_problem3_stats_pinned, d_problem3_stats,
+            sizeof(PlanetAsteroidStats), hipMemcpyDeviceToHost));
         DeviceScenarioStats final_device_stats{};
-        CUDA_CHECK(cudaMemcpy(&final_device_stats, d_device_stats,
-            sizeof(DeviceScenarioStats), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(hipMemcpy(&final_device_stats, d_device_stats,
+            sizeof(DeviceScenarioStats), hipMemcpyDeviceToHost));
 
         bool destroyed = final_device_stats.destroyed_step != -1;
         bool safe = (h_problem3_stats_pinned->hit_step == -1);
@@ -592,15 +593,15 @@ Problem3Result run_problem3_subset(NBodySimulatorGPU& simulator,
         }
     }
 
-    CUDA_CHECK(cudaEventRecord(stop, stream));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    cudaStreamDestroy(stream);
-    cudaFree(d_problem3_stats);
-    cudaFree(d_device_stats);
-    cudaFreeHost(h_problem3_stats_pinned);
+    CUDA_CHECK(hipEventRecord(stop, stream));
+    CUDA_CHECK(hipEventSynchronize(stop));
+    CUDA_CHECK(hipEventElapsedTime(&elapsed_ms, start, stop));
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
+    hipStreamDestroy(stream);
+    hipFree(d_problem3_stats);
+    hipFree(d_device_stats);
+    hipHostFree(h_problem3_stats_pinned);
     return result;
 }
 
@@ -634,26 +635,26 @@ double solve_problem1(NBodySimulatorGPU& simulator, int n, int planet, int aster
     host_stats.hit_step = -1;
 
     PlanetAsteroidStats* d_stats = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_stats, sizeof(PlanetAsteroidStats)));
-    CUDA_CHECK(cudaMemcpy(d_stats, &host_stats, sizeof(PlanetAsteroidStats),
-        cudaMemcpyHostToDevice));
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start));
+    CUDA_CHECK(hipMalloc(&d_stats, sizeof(PlanetAsteroidStats)));
+    CUDA_CHECK(hipMemcpy(d_stats, &host_stats, sizeof(PlanetAsteroidStats),
+        hipMemcpyHostToDevice));
+    hipEvent_t start, stop;
+    CUDA_CHECK(hipEventCreate(&start));
+    CUDA_CHECK(hipEventCreate(&stop));
+    CUDA_CHECK(hipEventRecord(start));
     simulator.record_distance_stats(d_stats, 0);
     for (int step = 1; step <= param::n_steps; ++step) {
         simulator.run_step(step, d_stats);
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaEventRecord(stop));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
-    CUDA_CHECK(cudaMemcpy(&host_stats, d_stats, sizeof(PlanetAsteroidStats),
-        cudaMemcpyDeviceToHost));
-    cudaFree(d_stats);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    CUDA_CHECK(hipDeviceSynchronize());
+    CUDA_CHECK(hipEventRecord(stop));
+    CUDA_CHECK(hipEventSynchronize(stop));
+    CUDA_CHECK(hipEventElapsedTime(&elapsed_ms, start, stop));
+    CUDA_CHECK(hipMemcpy(&host_stats, d_stats, sizeof(PlanetAsteroidStats),
+        hipMemcpyDeviceToHost));
+    hipFree(d_stats);
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
     return std::sqrt(host_stats.min_dist_sq);
 }
 
@@ -681,26 +682,26 @@ int solve_problem2(NBodySimulatorGPU& simulator, int planet, int asteroid,
     host_stats.min_dist_sq = std::numeric_limits<double>::infinity();
     host_stats.hit_step = -1;
     PlanetAsteroidStats* d_stats = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_stats, sizeof(PlanetAsteroidStats)));
-    CUDA_CHECK(cudaMemcpy(d_stats, &host_stats, sizeof(PlanetAsteroidStats),
-        cudaMemcpyHostToDevice));
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start));
+    CUDA_CHECK(hipMalloc(&d_stats, sizeof(PlanetAsteroidStats)));
+    CUDA_CHECK(hipMemcpy(d_stats, &host_stats, sizeof(PlanetAsteroidStats),
+        hipMemcpyHostToDevice));
+    hipEvent_t start, stop;
+    CUDA_CHECK(hipEventCreate(&start));
+    CUDA_CHECK(hipEventCreate(&stop));
+    CUDA_CHECK(hipEventRecord(start));
     simulator.record_distance_stats(d_stats, 0);
     for (int step = 1; step <= param::n_steps; ++step) {
         simulator.run_step(step, d_stats);
     }
-    CUDA_CHECK(cudaDeviceSynchronize());
-    CUDA_CHECK(cudaEventRecord(stop));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start, stop));
-    CUDA_CHECK(cudaMemcpy(&host_stats, d_stats, sizeof(PlanetAsteroidStats),
-        cudaMemcpyDeviceToHost));
-    cudaFree(d_stats);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    CUDA_CHECK(hipDeviceSynchronize());
+    CUDA_CHECK(hipEventRecord(stop));
+    CUDA_CHECK(hipEventSynchronize(stop));
+    CUDA_CHECK(hipEventElapsedTime(&elapsed_ms, start, stop));
+    CUDA_CHECK(hipMemcpy(&host_stats, d_stats, sizeof(PlanetAsteroidStats),
+        hipMemcpyDeviceToHost));
+    hipFree(d_stats);
+    hipEventDestroy(start);
+    hipEventDestroy(stop);
     return host_stats.hit_step;
 }
 
@@ -724,7 +725,7 @@ int main(int argc, char** argv) {
     const std::vector<double> base_m = m;
 
     int device_count = 0;
-    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    CUDA_CHECK(hipGetDeviceCount(&device_count));
     if (device_count < 2) {
         throw std::runtime_error("This refactored version requires at least 2 CUDA devices");
     }
@@ -755,7 +756,7 @@ int main(int argc, char** argv) {
     {
 #pragma omp section
         {
-            CUDA_CHECK(cudaSetDevice(0));
+            CUDA_CHECK(hipSetDevice(0));
             NBodySimulatorGPU simulator(n, is_device);
             min_dist = solve_problem1(simulator, n, planet, asteroid, is_device, base_qx,
                 base_qy, base_qz, base_vx, base_vy, base_vz, base_m, problem1_ms);
@@ -769,7 +770,7 @@ int main(int argc, char** argv) {
         }
 #pragma omp section
         {
-            CUDA_CHECK(cudaSetDevice(1));
+            CUDA_CHECK(hipSetDevice(1));
             NBodySimulatorGPU simulator(n, is_device);
             hit_time_step = solve_problem2(simulator, planet, asteroid, planet_radius_sq,
                 base_qx, base_qy, base_qz, base_vx, base_vy, base_vz, base_m, problem2_ms);

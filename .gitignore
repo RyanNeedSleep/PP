@@ -1,3 +1,5 @@
 HIPIFY/
 __pycache__/
+report*
 
+*.sqlite

@@ -1,5 +1,5 @@
 NVCC := nvcc
-NVCCFLAGS := -std=c++17 -O3 -Xcompiler -fopenmp -Wno-deprecated-gpu-targets
+NVCCFLAGS := -std=c++17 -O3  -Xcompiler -fopenmp -Wno-deprecated-gpu-targets
 CXX := g++
 CXXFLAGS := -std=c++17 -O3 -fopenmp
 TARGET := hw5
